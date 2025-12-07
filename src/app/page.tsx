@@ -1,300 +1,173 @@
-'use client';
+"use client";
 
-import React, { useState, useRef, useCallback } from 'react';
-import { Plus, Play, Save, Settings, Zap, Database, Mail, Calendar, FileText, Globe } from 'lucide-react';
+import { useState, useRef } from "react";
+import ConsultantWhiteboard, { AnalysisResult } from "@/components/ConsultantWhiteboard"; // Import from the previous component file
+import { Loader2, UploadCloud, FileText, AlertCircle } from "lucide-react";
+import dynamic from "next/dynamic";
+import { Download } from "lucide-react";
 
-interface NodeType {
-  id: string;
-  type: string;
-  label: string;
-  icon: any;
-  color: string;
-  x: number;
-  y: number;
-  inputs: number;
-  outputs: number;
-}
+const PDFDownloadLink = dynamic(
+  () => import("@react-pdf/renderer").then((mod) => mod.PDFDownloadLink),
+  {
+    ssr: false,
+    loading: () => <button className="px-4 py-2 bg-gray-200 rounded text-gray-500">Loading PDF...</button>,
+  }
+);
 
-interface ConnectionType {
-  id: string;
-  from: string;
-  to: string;
-}
+import ConsultantDeckPDF from "@/components/ConsultantDeckPDF";
+export default function Home() {
+  const [status, setStatus] = useState<"idle" | "uploading" | "processing" | "done" | "error">("idle");
+  const [data, setData] = useState<AnalysisResult | null>(null);
+  const [fileName, setFileName] = useState<string>("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-export default function Whiteboard() {
-  const [nodes, setNodes] = useState<NodeType[]>([]);
-  const [connections, setConnections] = useState<ConnectionType[]>([]);
-  const [selectedNode, setSelectedNode] = useState(null);
-  const [draggedNode, setDraggedNode] = useState(null);
-  const [connecting, setConnecting] = useState(null);
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const canvasRef = useRef(null);
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
 
-  const nodeTypes = [
-    { type: 'trigger', label: 'Webhook', icon: Zap, color: 'bg-green-500' },
-    { type: 'action', label: 'HTTP Request', icon: Globe, color: 'bg-blue-500' },
-    { type: 'action', label: 'Email', icon: Mail, color: 'bg-red-500' },
-    { type: 'action', label: 'Database', icon: Database, color: 'bg-purple-500' },
-    { type: 'action', label: 'Schedule', icon: Calendar, color: 'bg-orange-500' },
-    { type: 'action', label: 'File', icon: FileText, color: 'bg-gray-500' },
-  ];
+    setFileName(file.name);
+    setStatus("uploading");
 
-  const addNode = (nodeType: { type: string; label: string; icon: any; color: string }, x = 100, y = 100) => {
-    const newNode = {
-      id: `node_${Date.now()}`,
-      type: nodeType.type,
-      label: nodeType.label,
-      icon: nodeType.icon,
-      color: nodeType.color,
-      x: x,
-      y: y,
-      inputs: nodeType.type === 'trigger' ? 0 : 1,
-      outputs: 1,
-    };
-    console.log('Adding node:', newNode);
-    setNodes([...nodes, newNode]);
-  };
+    const formData = new FormData();
+    formData.append("file", file);
 
-  const moveNode = (nodeId: string, newX: number, newY: number) => {
-    setNodes(nodes.map(node => 
-      node.id === nodeId ? { ...node, x: newX, y: newY } : node
-    ));
-  };
+    try {
+      setStatus("processing");
+      
+      const response = await fetch("/api/analyze", {
+        method: "POST",
+        body: formData,
+      });
 
-  const deleteNode = (nodeId: string) => {
-    setNodes(nodes.filter(node => node.id !== nodeId));
-    setConnections(connections.filter(conn => 
-      conn.from !== nodeId && conn.to !== nodeId
-    ));
-  };
+      if (!response.ok) {
+        throw new Error("Failed to analyze PDF");
+      }
 
-  const startConnection = (nodeId: string, isOutput: boolean) => {
-    if (isOutput) {
-      setConnecting({ from: nodeId, to: null });
+      const result: AnalysisResult = await response.json();
+      setData(result);
+      setStatus("done");
+    } catch (error) {
+      console.error(error);
+      setStatus("error");
     }
   };
 
-  const completeConnection = (nodeId) => {
-    if (connecting && connecting.from !== nodeId) {
-      const newConnection = {
-        id: `conn_${Date.now()}`,
-        from: connecting.from,
-        to: nodeId,
-      };
-      setConnections([...connections, newConnection]);
-      setConnecting(null);
-    }
-  };
-
-  const handleNodeMouseDown = (e, node) => {
-    e.preventDefault();
-    setDraggedNode(node.id);
-    setSelectedNode(node.id);
-  };
-
-  const handleMouseMove = (e) => {
-    if (draggedNode) {
-      const rect = canvasRef.current.getBoundingClientRect();
-      const x = (e.clientX - rect.left - pan.x) / zoom;
-      const y = (e.clientY - rect.top - pan.y) / zoom;
-      moveNode(draggedNode, x - 75, y - 30);
-    }
-  };
-
-  const handleMouseUp = () => {
-    setDraggedNode(null);
-  };
-
-  const getConnectionPath = (fromNode, toNode) => {
-    const startX = fromNode.x + 150;
-    const startY = fromNode.y + 30;
-    const endX = toNode.x;
-    const endY = toNode.y + 30;
-    
-    const controlX1 = startX + 50;
-    const controlX2 = endX - 50;
-    
-    return `M ${startX} ${startY} C ${controlX1} ${startY}, ${controlX2} ${endY}, ${endX} ${endY}`;
-  };
-
-  const Node = ({ node }) => {
-    const IconComponent = node.icon;
-    
-    return (
-      <div
-        className={`absolute select-none cursor-move border-2 rounded-lg bg-gray-800 shadow-xl transition-all duration-200 ${
-          selectedNode === node.id ? 'border-blue-400 shadow-blue-500/20' : 'border-gray-600'
-        }`}
-        style={{
-          left: node.x,
-          top: node.y,
-          width: '150px',
-          height: '60px',
-        }}
-        onMouseDown={(e) => handleNodeMouseDown(e, node)}
-        onDoubleClick={() => deleteNode(node.id)}
-      >
-        {/* Input connector */}
-        {node.inputs > 0 && (
-          <div
-            className="absolute w-3 h-3 bg-gray-500 rounded-full cursor-pointer hover:bg-gray-300 transition-colors"
-            style={{ left: '-6px', top: '24px' }}
-            onClick={() => completeConnection(node.id)}
-          />
-        )}
-        
-        {/* Node content */}
-        <div className="flex items-center h-full px-3">
-          <div className={`w-8 h-8 rounded ${node.color} flex items-center justify-center mr-2`}>
-            <IconComponent size={16} className="text-white" />
-          </div>
-          <span className="text-sm font-medium text-gray-100 truncate">{node.label}</span>
-        </div>
-        
-        {/* Output connector */}
-        {node.outputs > 0 && (
-          <div
-            className="absolute w-3 h-3 bg-gray-500 rounded-full cursor-pointer hover:bg-gray-300 transition-colors"
-            style={{ right: '-6px', top: '24px' }}
-            onClick={() => startConnection(node.id, true)}
-          />
-        )}
-        
-        {/* Settings icon */}
-        <button
-          className="absolute top-1 right-1 w-4 h-4 opacity-0 hover:opacity-100 transition-opacity"
-          onClick={(e) => {
-            e.stopPropagation();
-            setSelectedNode(node.id);
-          }}
-        >
-          <Settings size={12} className="text-gray-400" />
-        </button>
-      </div>
-    );
+  const triggerFileInput = () => {
+    fileInputRef.current?.click();
   };
 
   return (
-    <div className="w-full h-screen bg-gray-900 flex flex-col overflow-hidden">
+    <main className="flex h-screen flex-col bg-white">
       {/* Header */}
-      <div className="bg-gray-800 border-b border-gray-700 px-4 py-3 flex items-center justify-between">
-        <div className="flex items-center space-x-4">
-          <h1 className="text-xl font-semibold text-gray-100">Workflow Editor</h1>
-          <div className="flex items-center space-x-2">
-            <button className="px-3 py-1 bg-green-500 text-white rounded-md hover:bg-green-600 transition-colors flex items-center space-x-1">
-              <Play size={14} />
-              <span>Execute</span>
-            </button>
-            <button className="px-3 py-1 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors flex items-center space-x-1">
-              <Save size={14} />
-              <span>Save</span>
-            </button>
-          </div>
-        </div>
+      <div className="flex items-center gap-4">
+  {status === "done" && data && (
+    <PDFDownloadLink
+      document={<ConsultantDeckPDF data={data} />}
+      fileName="Consultant_Analysis_Deck.pdf"
+    >
+      {({ loading }) => (
+        <button
+          disabled={loading}
+          className="flex items-center gap-2 bg-slate-800 hover:bg-slate-900 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all shadow-sm"
+        >
+          <Download className="w-4 h-4" />
+          {loading ? "Generating Deck..." : "Export to PDF Deck"}
+        </button>
+      )}
+    </PDFDownloadLink>
+  )}
+  
+  {status === "done" && (
+    <button
+      onClick={() => {
+        setStatus("idle");
+        setData(null);
+        setFileName("");
+      }}
+      className="text-sm text-slate-500 hover:text-blue-600 font-medium"
+    >
+      New Analysis
+    </button>
+  )}
+</div>
+
+      {/* Main Content Area */}
+      <div className="flex-1 relative overflow-hidden">
         
-        <div className="flex items-center space-x-2">
-          <span className="text-sm text-gray-400">Zoom:</span>
-          <button
-            onClick={() => setZoom(Math.max(0.5, zoom - 0.1))}
-            className="px-2 py-1 bg-gray-700 text-gray-200 rounded hover:bg-gray-600 transition-colors"
-          >
-            -
-          </button>
-          <span className="text-sm font-mono text-gray-200">{Math.round(zoom * 100)}%</span>
-          <button
-            onClick={() => setZoom(Math.min(2, zoom + 0.1))}
-            className="px-2 py-1 bg-gray-700 text-gray-200 rounded hover:bg-gray-600 transition-colors"
-          >
-            +
-          </button>
-        </div>
-      </div>
-
-      <div className="flex flex-1">
-        {/* Sidebar */}
-        <div className="w-64 bg-gray-800 border-r border-gray-700 p-4">
-          <h3 className="font-semibold text-gray-100 mb-4">Add Nodes</h3>
-          <div className="space-y-2">
-            {nodeTypes.map((nodeType, index) => {
-              const IconComponent = nodeType.icon;
-              return (
-                <button
-                  key={index}
-                  onClick={() => addNode(nodeType, Math.random() * 300 + 100, Math.random() * 200 + 100)}
-                  className="w-full flex items-center space-x-3 p-3 rounded-lg hover:bg-gray-700 transition-colors border border-gray-600"
-                >
-                  <div className={`w-8 h-8 rounded ${nodeType.color} flex items-center justify-center`}>
-                    <IconComponent size={16} className="text-white" />
-                  </div>
-                  <span className="text-sm font-medium text-gray-200">{nodeType.label}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Canvas */}
-        <div className="flex-1 relative overflow-hidden">
-          <div
-            ref={canvasRef}
-            className="w-full h-full relative bg-gray-900"
-            style={{
-              backgroundImage: `radial-gradient(circle, #4b5563 1px, transparent 1px)`,
-              backgroundSize: '20px 20px',
-              cursor: draggedNode ? 'grabbing' : 'default',
-            }}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-          >
-            {/* Transform container for zoom and pan */}
-            <div
-              style={{
-                transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-                transformOrigin: '0 0',
-                width: '100%',
-                height: '100%',
-              }}
+        {/* State: Idle (Upload Screen) */}
+        {status === "idle" && (
+          <div className="absolute inset-0 flex items-center justify-center bg-slate-50 p-4">
+            <div 
+              onClick={triggerFileInput}
+              className="cursor-pointer group text-center p-12 border-2 border-dashed border-slate-300 rounded-xl bg-white max-w-lg w-full transition-all hover:border-blue-500 hover:shadow-xl"
             >
-              {/* SVG for connections */}
-              <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 1 }}>
-                {connections.map((connection) => {
-                  const fromNode = nodes.find(n => n.id === connection.from);
-                  const toNode = nodes.find(n => n.id === connection.to);
-                  if (!fromNode || !toNode) return null;
-                  
-                  return (
-                    <path
-                      key={connection.id}
-                      d={getConnectionPath(fromNode, toNode)}
-                      stroke="#9ca3af"
-                      strokeWidth="2"
-                      fill="none"
-                      className="drop-shadow-sm"
-                    />
-                  );
-                })}
-              </svg>
-
-              {/* Nodes */}
-              {nodes.map((node) => (
-                <Node key={node.id} node={node} />
-              ))}
-
-              {/* Empty state */}
-              {nodes.length === 0 && (
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <div className="text-center text-gray-400">
-                    <Plus size={48} className="mx-auto mb-4 opacity-50" />
-                    <p className="text-lg font-medium">Start building your workflow</p>
-                    <p className="text-sm">Add nodes from the sidebar to get started</p>
-                  </div>
-                </div>
-              )}
+              <input 
+                type="file" 
+                accept="application/pdf" 
+                ref={fileInputRef} 
+                onChange={handleFileUpload} 
+                className="hidden" 
+              />
+              <div className="bg-blue-50 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 group-hover:scale-110 transition-transform">
+                <UploadCloud className="w-10 h-10 text-blue-600" />
+              </div>
+              <h2 className="text-2xl font-bold text-slate-800 mb-2">Upload Consultant Report</h2>
+              <p className="text-slate-500 mb-8 leading-relaxed">
+                Upload a PDF case study or financial report.<br/>
+                Our AI will extract the OCR text and build a logic tree.
+              </p>
+              <button className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-8 rounded-full shadow-lg transition-all active:scale-95">
+                Choose PDF File
+              </button>
             </div>
           </div>
-        </div>
+        )}
+
+        {/* State: Processing / Loading */}
+        {(status === "uploading" || status === "processing") && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-white z-20">
+            <div className="relative">
+                <div className="absolute inset-0 bg-blue-100 rounded-full animate-ping opacity-75"></div>
+                <div className="relative bg-white p-4 rounded-full shadow-lg border border-slate-100">
+                    <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
+                </div>
+            </div>
+            <h3 className="text-xl font-bold text-slate-800 mt-6">
+              {status === "uploading" ? "Reading PDF..." : "Consultant AI is Thinking..."}
+            </h3>
+            <p className="text-slate-500 mt-2 max-w-xs text-center">
+              {fileName && <span className="block mb-2 text-xs font-mono bg-slate-100 py-1 px-2 rounded text-slate-600">{fileName}</span>}
+              {status === "uploading" 
+                ? "Extracting text content from your document." 
+                : "Analyzing problem statements, hypotheses, and evidence."}
+            </p>
+          </div>
+        )}
+
+        {/* State: Error */}
+        {status === "error" && (
+          <div className="absolute inset-0 flex items-center justify-center bg-red-50">
+             <div className="text-center max-w-md">
+                <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
+                <h3 className="text-lg font-bold text-red-700">Analysis Failed</h3>
+                <p className="text-red-600 mt-2">
+                    Something went wrong while processing the PDF. Please check your API Key or try a different file.
+                </p>
+                <button 
+                    onClick={() => setStatus('idle')}
+                    className="mt-6 text-sm font-bold text-red-700 hover:underline"
+                >
+                    Try Again
+                </button>
+             </div>
+          </div>
+        )}
+
+        {/* State: Done (Render Whiteboard) */}
+        {status === "done" && data && (
+          <ConsultantWhiteboard data={data} />
+        )}
       </div>
-    </div>
+    </main>
   );
 }
